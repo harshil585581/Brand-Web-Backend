@@ -28,12 +28,12 @@ def create_admin(db: Session = Depends(get_db)):
     if existing:
         return {"message": "Admin already exists"}
 
-    hashed_password = pwd_context.hash("123456")
+    hashed_password = pwd_context.hash("shubam123")
 
     admin_user = models.User(
         name="Admin User",
-        username="admin",
-        email="admin@gmail.com",
+        username="shubam",
+        email="shubam@gmail.com",
         password=hashed_password,
         role="admin",
         permissions="all"
@@ -44,7 +44,6 @@ def create_admin(db: Session = Depends(get_db)):
     db.refresh(admin_user)
 
     return {"message": "Admin created successfully"}
-
 
 
 from sqlalchemy import inspect
@@ -65,7 +64,14 @@ app.mount("/uploads", StaticFiles(directory="backend/uploads"), name="uploads")
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"], 
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:3000"
+    ], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
