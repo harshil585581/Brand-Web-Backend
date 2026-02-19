@@ -671,12 +671,24 @@ async def create_brand(
     db.commit()
     db.refresh(new_brand)
     
-    # Log Activity
     log_activity(db, current_user.id, "CREATED_BRAND", f"Created new brand: {new_brand.name}")
 
     return new_brand
 
-@app.post("/api/brands/{brand_id}/assets")
+class BrandAssetDisplay(BaseModel):
+    id: int
+    brand_id: int
+    name: str
+    category: str
+    description: Optional[str] = None
+    file_url: str
+    file_size: Optional[str] = None
+    upload_date: datetime
+
+    class Config:
+        from_attributes = True
+
+@app.post("/api/brands/{brand_id}/assets", response_model=BrandAssetDisplay)
 async def upload_brand_asset(
     brand_id: int,
     file: UploadFile = File(...),
@@ -725,7 +737,13 @@ def get_brands(db: Session = Depends(get_db), current_user: models.User = Depend
         result.append(brand_data)
     return result
 
-@app.get("/api/brands/{brand_id}")
+    return result
+
+class BrandDetailDisplay(BaseModel):
+    brand: dict
+    assets: List[BrandAssetDisplay]
+
+@app.get("/api/brands/{brand_id}", response_model=BrandDetailDisplay)
 def get_brand_details(brand_id: str, db: Session = Depends(get_db)):
     # Try ID first, then slug
     if brand_id.isdigit():
@@ -738,8 +756,9 @@ def get_brand_details(brand_id: str, db: Session = Depends(get_db)):
     
     assets = db.query(models.BrandAsset).filter(models.BrandAsset.brand_id == brand.id).all()
     
-    return {"brand": brand, "assets": assets}
-    return {"brand": brand, "assets": assets}
+    # Manually construction dict for brand to avoid circular dependencies or complex nesting if any, 
+    # but here just returning the ORM object as dict is fine for Pydantic 'brand: dict'
+    return {"brand": brand.__dict__, "assets": assets}
 
 @app.put("/api/brands/{brand_id}")
 async def update_brand(
