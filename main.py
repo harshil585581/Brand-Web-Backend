@@ -22,6 +22,14 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+from sqlalchemy import inspect
+
+@app.get("/check-tables")
+def check_tables():
+    inspector = inspect(engine)
+    return {"tables": inspector.get_table_names()}
+
+
 # Password hashing configuration
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
