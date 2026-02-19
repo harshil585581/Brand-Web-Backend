@@ -594,6 +594,54 @@ class BrandCreate(BaseModel):
     accent_color_name: str = Form(...)
     accent_color_usage: str = Form(...)
 
+class BrandAssetDisplay(BaseModel):
+    id: int
+    brand_id: int
+    name: str
+    category: str
+    description: Optional[str] = None
+    file_url: str
+    file_size: Optional[str] = None
+    upload_date: datetime
+
+    class Config:
+        from_attributes = True
+
+class BrandDisplay(BaseModel):
+    id: int
+    company_id: Optional[int] = None
+    slug: str
+    name: str
+    description: str
+    industry: str
+    archetype: str
+    status: str
+    owner: str
+    version: str
+    core_values: str
+    logomark_url: Optional[str] = None
+    wordmark_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    primary_color_name: Optional[str] = None
+    primary_color_usage: Optional[str] = None
+    secondary_color: Optional[str] = None
+    secondary_color_name: Optional[str] = None
+    secondary_color_usage: Optional[str] = None
+    accent_color: Optional[str] = None
+    accent_color_name: Optional[str] = None
+    accent_color_usage: Optional[str] = None
+    last_update: Optional[datetime] = None
+    is_archived: bool
+    is_campaign: bool
+    assets_count: Optional[int] = 0
+
+    class Config:
+        from_attributes = True
+
+class BrandDetailDisplay(BaseModel):
+    brand: BrandDisplay
+    assets: List[BrandAssetDisplay]
+
 @app.post("/api/brands", response_model=BrandDisplay)
 async def create_brand(
     name: str = Form(...),
@@ -675,18 +723,7 @@ async def create_brand(
 
     return new_brand
 
-class BrandAssetDisplay(BaseModel):
-    id: int
-    brand_id: int
-    name: str
-    category: str
-    description: Optional[str] = None
-    file_url: str
-    file_size: Optional[str] = None
-    upload_date: datetime
 
-    class Config:
-        from_attributes = True
 
 @app.post("/api/brands/{brand_id}/assets", response_model=BrandAssetDisplay)
 async def upload_brand_asset(
@@ -739,40 +776,7 @@ def get_brands(db: Session = Depends(get_db), current_user: models.User = Depend
 
     return result
 
-class BrandDisplay(BaseModel):
-    id: int
-    company_id: Optional[int] = None
-    slug: str
-    name: str
-    description: str
-    industry: str
-    archetype: str
-    status: str
-    owner: str
-    version: str
-    core_values: str
-    logomark_url: Optional[str] = None
-    wordmark_url: Optional[str] = None
-    primary_color: Optional[str] = None
-    primary_color_name: Optional[str] = None
-    primary_color_usage: Optional[str] = None
-    secondary_color: Optional[str] = None
-    secondary_color_name: Optional[str] = None
-    secondary_color_usage: Optional[str] = None
-    accent_color: Optional[str] = None
-    accent_color_name: Optional[str] = None
-    accent_color_usage: Optional[str] = None
-    last_update: Optional[datetime] = None
-    is_archived: bool
-    is_campaign: bool
-    assets_count: Optional[int] = 0
 
-    class Config:
-        from_attributes = True
-
-class BrandDetailDisplay(BaseModel):
-    brand: BrandDisplay
-    assets: List[BrandAssetDisplay]
 
 @app.get("/api/brands/{brand_id}", response_model=BrandDetailDisplay)
 def get_brand_details(brand_id: str, db: Session = Depends(get_db)):
