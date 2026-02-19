@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import shutil
 import uuid
 import os
+import traceback
 from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
@@ -23,7 +24,7 @@ load_dotenv(dotenv_path, override=True)
 
 # Create tables if they don't exist
 # Create tables if they don't exist
-models.Base.metadata.create_all(bind=engine)
+# models.Base.metadata.create_all(bind=engine)
 
 # Run Alembic Migrations
 from alembic.config import Config
@@ -199,74 +200,79 @@ async def create_member(
     # We need to distinguish between "Admin creating employee" vs "New User Signup"
     # For now, let's assume if 'company_name' is provided and it's a signup, we check or create company.
     
-    # Check duplicate email/username
-    existing_user_email = db.query(models.User).filter(models.User.email == email).first()
-    if existing_user_email:
-        raise HTTPException(status_code=400, detail="Email already exists")
-    
-    existing_user_username = db.query(models.User).filter(models.User.username == username).first()
-    if existing_user_username:
-        raise HTTPException(status_code=400, detail="Username already exists")
-
-    # Handle profile picture
-    profile_img_path = None
-    if profile_picture:
-        file_extension = profile_picture.filename.split(".")[-1]
-        filename = f"{uuid.uuid4()}.{file_extension}"
-        file_path = f"backend/uploads/{filename}"
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(profile_picture.file, buffer)
-        profile_img_path = f"/uploads/{filename}" 
-    elif profile_picture_url:
-        profile_img_path = profile_picture_url
-
-    # Hash password
-    hashed_password = pwd_context.hash(password)
-
-    # Company Logic
-    if company_name:
-        # Check if company exists (by name? risky if duplicates allowed, but let's assume unique names for SaaS)
-        # IMPROVEMENT: If logged in admin, use their company_id. 
-        # But this endpoint is likely used for Signup Page too.
-        # Let's try to lookup company.
-        company = db.query(models.Company).filter(models.Company.name == company_name).first()
-        if not company:
-            # Create new company
-            company = models.Company(name=company_name)
-            db.add(company)
-            db.commit()
-            db.refresh(company)
+    try:
+        # Check duplicate email/username
+        existing_user_email = db.query(models.User).filter(models.User.email == email).first()
+        if existing_user_email:
+            raise HTTPException(status_code=400, detail="Email already exists")
         
-        final_company_id = company.id
-        final_company_name = company.name
-    else:
-        # If no company name provided, maybe fallback or error?
-        # For an employee being added by admin, the admin should pass company_name field or we need auth here.
-        # Let's require company_name for now if public signup.
-        # If we had `current_user`, we could default to `current_user.company_id`.
-        # Since this is "create_member" (could be signup), let's create a default "Personal Workspace" if missing?
-        # Or error.
-        raise HTTPException(status_code=400, detail="Company Name is required")
+        existing_user_username = db.query(models.User).filter(models.User.username == username).first()
+        if existing_user_username:
+            raise HTTPException(status_code=400, detail="Username already exists")
 
-    new_user = models.User(
-        name=name,
-        username=username,
-        email=email,
-        password=hashed_password,
-        company_name=final_company_name,
-        company_id=final_company_id,
-        role=role,
-        permissions=permissions,
-        profile_img=profile_img_path
-    )
+        # Handle profile picture
+        profile_img_path = None
+        if profile_picture:
+            file_extension = profile_picture.filename.split(".")[-1]
+            filename = f"{uuid.uuid4()}.{file_extension}"
+            file_path = f"backend/uploads/{filename}"
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(profile_picture.file, buffer)
+            profile_img_path = f"/uploads/{filename}" 
+        elif profile_picture_url:
+            profile_img_path = profile_picture_url
 
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+        # Hash password
+        hashed_password = pwd_context.hash(password)
 
-    log_activity(db, new_user.id, "MEMBER_JOINED", f"New team member {new_user.name} joined.")
+        # Company Logic
+        if company_name:
+            # Check if company exists (by name? risky if duplicates allowed, but let's assume unique names for SaaS)
+            # IMPROVEMENT: If logged in admin, use their company_id. 
+            # But this endpoint is likely used for Signup Page too.
+            # Let's try to lookup company.
+            company = db.query(models.Company).filter(models.Company.name == company_name).first()
+            if not company:
+                # Create new company
+                company = models.Company(name=company_name)
+                db.add(company)
+                db.commit()
+                db.refresh(company)
+            
+            final_company_id = company.id
+            final_company_name = company.name
+        else:
+            # If no company name provided, maybe fallback or error?
+            # For an employee being added by admin, the admin should pass company_name field or we need auth here.
+            # Let's require company_name for now if public signup.
+            # If we had `current_user`, we could default to `current_user.company_id`.
+            # Since this is "create_member" (could be signup), let's create a default "Personal Workspace" if missing?
+            # Or error.
+            raise HTTPException(status_code=400, detail="Company Name is required")
 
-    return {"message": "Member created successfully", "user_id": new_user.id}
+        new_user = models.User(
+            name=name,
+            username=username,
+            email=email,
+            password=hashed_password,
+            company_name=final_company_name,
+            company_id=final_company_id,
+            role=role,
+            permissions=permissions,
+            profile_img=profile_img_path
+        )
+
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        log_activity(db, new_user.id, "MEMBER_JOINED", f"New team member {new_user.name} joined.")
+
+        return {"message": "Member created successfully", "user_id": new_user.id}
+    except Exception as e:
+        print(f"Error creating member: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 from typing import Optional
 
