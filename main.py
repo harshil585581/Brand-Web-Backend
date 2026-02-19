@@ -739,26 +739,60 @@ def get_brands(db: Session = Depends(get_db), current_user: models.User = Depend
 
     return result
 
+class BrandDisplay(BaseModel):
+    id: int
+    company_id: Optional[int] = None
+    slug: str
+    name: str
+    description: str
+    industry: str
+    archetype: str
+    status: str
+    owner: str
+    version: str
+    core_values: str
+    logomark_url: Optional[str] = None
+    wordmark_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    primary_color_name: Optional[str] = None
+    primary_color_usage: Optional[str] = None
+    secondary_color: Optional[str] = None
+    secondary_color_name: Optional[str] = None
+    secondary_color_usage: Optional[str] = None
+    accent_color: Optional[str] = None
+    accent_color_name: Optional[str] = None
+    accent_color_usage: Optional[str] = None
+    last_update: Optional[datetime] = None
+    is_archived: bool
+    is_campaign: bool
+    assets_count: Optional[int] = 0
+
+    class Config:
+        from_attributes = True
+
 class BrandDetailDisplay(BaseModel):
-    brand: dict
+    brand: BrandDisplay
     assets: List[BrandAssetDisplay]
 
 @app.get("/api/brands/{brand_id}", response_model=BrandDetailDisplay)
 def get_brand_details(brand_id: str, db: Session = Depends(get_db)):
-    # Try ID first, then slug
-    if brand_id.isdigit():
-        brand = db.query(models.Brand).filter(models.Brand.id == int(brand_id)).first()
-    else:
-        brand = db.query(models.Brand).filter(models.Brand.slug == brand_id).first()
+    try:
+        # Try ID first, then slug
+        if brand_id.isdigit():
+            brand = db.query(models.Brand).filter(models.Brand.id == int(brand_id)).first()
+        else:
+            brand = db.query(models.Brand).filter(models.Brand.slug == brand_id).first()
+            
+        if not brand:
+            raise HTTPException(status_code=404, detail="Brand not found")
         
-    if not brand:
-        raise HTTPException(status_code=404, detail="Brand not found")
-    
-    assets = db.query(models.BrandAsset).filter(models.BrandAsset.brand_id == brand.id).all()
-    
-    # Manually construction dict for brand to avoid circular dependencies or complex nesting if any, 
-    # but here just returning the ORM object as dict is fine for Pydantic 'brand: dict'
-    return {"brand": brand.__dict__, "assets": assets}
+        assets = db.query(models.BrandAsset).filter(models.BrandAsset.brand_id == brand.id).all()
+        
+        return {"brand": brand, "assets": assets}
+    except Exception as e:
+        print(f"Error fetching brand details: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @app.put("/api/brands/{brand_id}")
 async def update_brand(
