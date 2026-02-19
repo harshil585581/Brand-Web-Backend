@@ -2,15 +2,26 @@ from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean
 from sqlalchemy.sql import func
 from .database import Base
 
+class Company(Base):
+    __tablename__ = "companies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    subscription_status = Column(String, default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True) # Start nullable for migration, enforce later
     name = Column(String)
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
     password = Column(String)
     profile_img = Column(String, nullable=True)
+    # company_name field in User might be redundant if we have company_id, but keeping for now as it might be used in frontend
+    company_name = Column(String, nullable=True) 
     role = Column(String, default="employee") # admin, employee
     permissions = Column(String, nullable=True)
     generations_count = Column(Integer, default=0)
@@ -19,6 +30,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True)
+    description = Column(String, nullable=True) # Added to fix potential schema mismatch if needed, though not in original
     sender_id = Column(Integer, ForeignKey("users.id"))
     receiver_id = Column(Integer, ForeignKey("users.id"))
     content = Column(String)
@@ -30,6 +42,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
     id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     action = Column(String) # CREATED_BRAND, UPDATED_BRAND, GENERATED_CONTENT, CREATED_MEMBER, CREATED_EVENT, CREATED_TASK
     details = Column(String) # Description text
@@ -39,6 +52,7 @@ class Brand(Base):
     __tablename__ = "brands"
 
     id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
     slug = Column(String, unique=True, index=True) # For URL friendly ID
     name = Column(String)
     description = Column(String)
@@ -84,6 +98,7 @@ class Event(Base):
     __tablename__ = "events"
 
     id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
     title = Column(String)
     brand = Column(String, nullable=True)
     date = Column(String) # YYYY-MM-DD

@@ -12,13 +12,66 @@ from dotenv import load_dotenv
 import shutil
 import uuid
 import os
+from datetime import datetime, timedelta
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from sqlalchemy.orm import joinedload
 
 # Load .env manually from absolute path to handle CWD discrepancies
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path, override=True)
 
 # Create tables if they don't exist
+# Create tables if they don't exist
 models.Base.metadata.create_all(bind=engine)
+
+# Run Alembic Migrations
+from alembic.config import Config
+from alembic import command
+import os
+
+
+# JWT Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 24 hours
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+try:
+    command.upgrade(alembic_cfg, "head")
+except Exception as e:
+    print(f"Migration failed: {e}")
+
 
 app = FastAPI()
 
@@ -28,6 +81,17 @@ def create_admin(db: Session = Depends(get_db)):
     if existing:
         return {"message": "Admin already exists"}
 
+    # Create Default Company for Admin
+    existing_company = db.query(models.Company).filter(models.Company.name == "Admin Company").first()
+    if not existing_company:
+        admin_company = models.Company(name="Admin Company")
+        db.add(admin_company)
+        db.commit()
+        db.refresh(admin_company)
+        company_id = admin_company.id
+    else:
+        company_id = existing_company.id
+
     hashed_password = pwd_context.hash("shubam123")
 
     admin_user = models.User(
@@ -36,7 +100,9 @@ def create_admin(db: Session = Depends(get_db)):
         email="shubam@gmail.com",
         password=hashed_password,
         role="admin",
-        permissions="all"
+        permissions="all",
+        company_id=company_id,
+        company_name="Admin Company"
     )
 
     db.add(admin_user)
@@ -70,7 +136,9 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
-        "http://127.0.0.1:3000"
+        "http://127.0.0.1:3000",
+        "*",
+        "*"
     ], 
     allow_credentials=True,
     allow_methods=["*"],
@@ -90,15 +158,25 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     if not pwd_context.verify(user.password, db_user.password):
         raise HTTPException(status_code=400, detail="Invalid email or password")
     
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": db_user.email, "user_id": db_user.id, "company_id": db_user.company_id},
+        expires_delta=access_token_expires
+    )
+
     return {
         "message": "Login successful", 
+        "access_token": access_token,
+        "token_type": "bearer",
         "user_id": db_user.id,
         "user": {
             "name": db_user.name,
             "username": db_user.username,
             "email": db_user.email,
             "role": db_user.role,
-            "profile_img": db_user.profile_img
+            "profile_img": db_user.profile_img,
+            "company_id": db_user.company_id,
+            "company_name": db_user.company_name
         }
     }
 
@@ -108,13 +186,21 @@ async def create_member(
     username: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
-    role: str = Form(...),
+    company_name: str = Form(None),
+    role: str = Form("employee"), # Default to employee if not provided
     permissions: str = Form(None),
     profile_picture: UploadFile = File(None),
     profile_picture_url: str = Form(None),
     db: Session = Depends(get_db)
 ):
-    # Check for duplicate email or username
+    # Logic: 
+    # If authenticated user creates member -> assign to same company
+    # If public sign up (no auth) -> Create NEW Company based on company_name
+    
+    # We need to distinguish between "Admin creating employee" vs "New User Signup"
+    # For now, let's assume if 'company_name' is provided and it's a signup, we check or create company.
+    
+    # Check duplicate email/username
     existing_user_email = db.query(models.User).filter(models.User.email == email).first()
     if existing_user_email:
         raise HTTPException(status_code=400, detail="Email already exists")
@@ -131,7 +217,6 @@ async def create_member(
         file_path = f"backend/uploads/{filename}"
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(profile_picture.file, buffer)
-        # Store the URL path that the frontend can access
         profile_img_path = f"/uploads/{filename}" 
     elif profile_picture_url:
         profile_img_path = profile_picture_url
@@ -139,11 +224,38 @@ async def create_member(
     # Hash password
     hashed_password = pwd_context.hash(password)
 
+    # Company Logic
+    if company_name:
+        # Check if company exists (by name? risky if duplicates allowed, but let's assume unique names for SaaS)
+        # IMPROVEMENT: If logged in admin, use their company_id. 
+        # But this endpoint is likely used for Signup Page too.
+        # Let's try to lookup company.
+        company = db.query(models.Company).filter(models.Company.name == company_name).first()
+        if not company:
+            # Create new company
+            company = models.Company(name=company_name)
+            db.add(company)
+            db.commit()
+            db.refresh(company)
+        
+        final_company_id = company.id
+        final_company_name = company.name
+    else:
+        # If no company name provided, maybe fallback or error?
+        # For an employee being added by admin, the admin should pass company_name field or we need auth here.
+        # Let's require company_name for now if public signup.
+        # If we had `current_user`, we could default to `current_user.company_id`.
+        # Since this is "create_member" (could be signup), let's create a default "Personal Workspace" if missing?
+        # Or error.
+        raise HTTPException(status_code=400, detail="Company Name is required")
+
     new_user = models.User(
         name=name,
         username=username,
         email=email,
         password=hashed_password,
+        company_name=final_company_name,
+        company_id=final_company_id,
         role=role,
         permissions=permissions,
         profile_img=profile_img_path
@@ -153,14 +265,6 @@ async def create_member(
     db.commit()
     db.refresh(new_user)
 
-    # Log activity (System or Admin? We don't have current_user here easily without auth dependency change)
-    # For now, let's assume it's a public registration or admin action. 
-    # If we want to track WHO created it, we need authentication on this endpoint. 
-    # Currently `create_member` seems open? No `Depends(get_current_user)`.
-    # Let's log it with a system user ID or just handle it if it's an authenticated route later.
-    # Actually, the user requirement says "if team member created it should show that".
-    # We can log it as "New Team Member Joined" or similar.
-    # Let's assign it to the new user themselves? "User X joined".
     log_activity(db, new_user.id, "MEMBER_JOINED", f"New team member {new_user.name} joined.")
 
     return {"message": "Member created successfully", "user_id": new_user.id}
@@ -172,6 +276,7 @@ class UserDisplay(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     email: Optional[str] = None
+    company_name: Optional[str] = None
     role: Optional[str] = None
     profile_img: Optional[str] = None
     permissions: Optional[str] = None
@@ -180,8 +285,9 @@ class UserDisplay(BaseModel):
         from_attributes = True
 
 @app.get("/api/members", response_model=list[UserDisplay])
-def get_members(db: Session = Depends(get_db)):
-    users = db.query(models.User).order_by(models.User.id.asc()).all()
+def get_members(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Filter by Company
+    users = db.query(models.User).filter(models.User.company_id == current_user.company_id).order_by(models.User.id.asc()).all()
     return users
 
 @app.get("/api/users/{user_id}")
@@ -201,11 +307,26 @@ def get_user_profile(user_id: int, db: Session = Depends(get_db)):
     }
 
 @app.delete("/api/members/{user_id}")
-def delete_member(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.id == user_id).first()
+def delete_member(user_id: int, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.id == user_id, models.User.company_id == current_user.company_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    # Handle Foreign Key Constraints
+    # 1. Remove from Event Participants
+    db.query(models.EventParticipant).filter(models.EventParticipant.user_id == user_id).delete(synchronize_session=False)
+
+    # 2. Unlink Messages (Sender & Receiver)
+    db.query(models.Message).filter(models.Message.sender_id == user_id).update({models.Message.sender_id: None}, synchronize_session=False)
+    db.query(models.Message).filter(models.Message.receiver_id == user_id).update({models.Message.receiver_id: None}, synchronize_session=False)
+
+    # 3. Unlink Events (Owner)
+    db.query(models.Event).filter(models.Event.owner_id == user_id).update({models.Event.owner_id: None}, synchronize_session=False)
+
+    # 4. Unlink Activity Logs
+    db.query(models.ActivityLog).filter(models.ActivityLog.user_id == user_id).update({models.ActivityLog.user_id: None}, synchronize_session=False)
+
+    # Now safe to delete user
     db.delete(user)
     db.commit()
     return {"message": "User deleted successfully"}
@@ -291,6 +412,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, db: Session = D
                 message_id = data.get("message_id")
                 if message_id:
                     msg = db.query(models.Message).filter(models.Message.id == message_id).first()
+                    # Ensure accessing message within company scope if needed, 
+                    # but websockets effectively authenticated by connection. 
                     if msg:
                         # Update status
                         new_status = "delivered" if message_type == "delivery_receipt" else "read"
@@ -364,7 +487,7 @@ class EventCreate(BaseModel):
     participants: List[int] = [] # List of user IDs
 
 @app.post("/api/events")
-def create_event(event: EventCreate, db: Session = Depends(get_db)):
+def create_event(event: EventCreate, current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Create Event
     new_event = models.Event(
         title=event.title,
@@ -372,7 +495,8 @@ def create_event(event: EventCreate, db: Session = Depends(get_db)):
         date=event.date,
         start_time=event.start_time,
         end_time=event.end_time,
-        owner_id=event.owner_id, # Should be validated or set to current user if not provided
+        owner_id=current_user.id, # Force usage of logged in user
+        company_id=current_user.company_id,
         description=event.description,
         type=event.type,
         color=event.color
@@ -381,17 +505,19 @@ def create_event(event: EventCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_event)
 
-    # Add Participants
+    # Add Participants (validate they belong to company?)
     for user_id in event.participants:
-        participant = models.EventParticipant(event_id=new_event.id, user_id=user_id)
-        db.add(participant)
+        # Check participant is in same company
+        part_user = db.query(models.User).filter(models.User.id == user_id, models.User.company_id == current_user.company_id).first()
+        if part_user:
+            participant = models.EventParticipant(event_id=new_event.id, user_id=user_id)
+            db.add(participant)
     
     db.commit()
     
     # Log Activity
-    # Determine type for readable log
     action_type = "CREATED_TASK" if event.type == 'task' else "CREATED_EVENT"
-    log_activity(db, event.owner_id, action_type, f"Created {event.type}: {event.title}")
+    log_activity(db, new_event.owner_id, action_type, f"Created {event.type}: {event.title}")
 
     return {"message": "Event created successfully", "event_id": new_event.id}
 
@@ -412,28 +538,10 @@ class EventDisplay(BaseModel):
         from_attributes = True
 
 @app.get("/api/events", response_model=List[EventDisplay])
-def get_events(user_id: int = Query(None), db: Session = Depends(get_db)):
-    # If user_id is provided, fetch events where user is owner OR participant
-    # This logic assumes we want to filter by user. If no user_id, maybe return all?
-    # Let's enforce user_id for now or default to return all if None (admin view)
+def get_events(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Filter by Company
+    events = db.query(models.Event).filter(models.Event.company_id == current_user.company_id).order_by(models.Event.date.asc(), models.Event.start_time.asc()).all()
     
-    if user_id:
-        # Subquery for events where user is participant
-        participant_events = db.query(models.EventParticipant.event_id).filter(models.EventParticipant.user_id == user_id).subquery()
-        
-        events = db.query(models.Event).filter(
-            (models.Event.owner_id == user_id) | 
-            (models.Event.id.in_(participant_events))
-        ).order_by(models.Event.date.asc(), models.Event.start_time.asc()).all()
-    else:
-        events = db.query(models.Event).order_by(models.Event.date.asc(), models.Event.start_time.asc()).all()
-    
-    # We might want to filter by date >= today in backend too, but frontend can handle "Upcoming" vs "Past"
-    # User asked for "nearest to today date in order".
-    # But `get_events` might be used by Calendar which needs ALL events.
-    # So let's keep it returning all, but sorted. Frontend Dashboard will filter >= today.
-    
-    # Format response to include participants details
     result = []
     for event in events:
         owner = db.query(models.User).filter(models.User.id == event.owner_id).first()
@@ -502,19 +610,12 @@ async def create_brand(
     accent_color_usage: str = Form(...),
     logomark: UploadFile = File(None),
     wordmark: UploadFile = File(None),
-    # Dynamic assets - Handling them might be tricky with Form(...), simplistic approach for now:
-    # We will assume assets are uploaded separately or handled as a list of files with metadata json
-    # For MVP, let's keep it simple: Just create the brand first.
-    # Actually, let's handle assets in a separate endpoint or just basic file uploads if possible.
-    # To support multiple assets in one go with metadata, we'd need a more complex multipart form parsing or JSON + Base64.
-    # Strategy: API receives JSON for metadata and Files. 
-    # But usually <form> is easiest for files. 
-    # Let's start with Brand fields + Logo/Wordmark. Assets can be added later or we try to parse them.
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
     # Generate slug
     slug = name.lower().replace(" ", "-")
-    existing_brand = db.query(models.Brand).filter(models.Brand.slug == slug).first()
+    existing_brand = db.query(models.Brand).filter(models.Brand.slug == slug, models.Brand.company_id == current_user.company_id).first()
     if existing_brand:
         slug = f"{slug}-{uuid.uuid4().hex[:6]}"
 
@@ -540,6 +641,7 @@ async def create_brand(
     new_brand = models.Brand(
         slug=slug,
         name=name,
+        company_id=current_user.company_id,
         description=description,
         industry=industry,
         archetype=archetype,
@@ -565,10 +667,7 @@ async def create_brand(
     db.refresh(new_brand)
     
     # Log Activity
-    # Try to find user ID by owner name
-    user = db.query(models.User).filter(models.User.name == owner).first()
-    user_id = user.id if user else 1 # Default to 1 if not found
-    log_activity(db, user_id, "CREATED_BRAND", f"Created new brand: {new_brand.name}")
+    log_activity(db, current_user.id, "CREATED_BRAND", f"Created new brand: {new_brand.name}")
 
     return new_brand
 
@@ -608,8 +707,8 @@ async def upload_brand_asset(
     return new_asset
 
 @app.get("/api/brands")
-def get_brands(db: Session = Depends(get_db)):
-    brands = db.query(models.Brand).all()
+def get_brands(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    brands = db.query(models.Brand).filter(models.Brand.company_id == current_user.company_id).all()
     # Populate asset count for listing?
     # For now return raw brands, frontend can handle.
     # Better: return a schema that includes asset count
@@ -809,16 +908,19 @@ INSTRUCTIONS:
 
 def log_activity(db: Session, user_id: int, action: str, details: str):
     try:
-        log = models.ActivityLog(user_id=user_id, action=action, details=details)
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        company_id = user.company_id if user else None
+        
+        log = models.ActivityLog(user_id=user_id, company_id=company_id, action=action, details=details)
         db.add(log)
         db.commit()
     except Exception as e:
         print(f"Failed to log activity: {e}")
 
 @app.get("/api/logs")
-def get_activity_logs(limit: int = 20, db: Session = Depends(get_db)):
-    # Optimize query with join
-    results = db.query(models.ActivityLog, models.User).outerjoin(models.User, models.ActivityLog.user_id == models.User.id).order_by(models.ActivityLog.timestamp.desc()).limit(limit).all()
+def get_activity_logs(limit: int = 20, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Optimize query with join and filter by company
+    results = db.query(models.ActivityLog, models.User).outerjoin(models.User, models.ActivityLog.user_id == models.User.id).filter(models.ActivityLog.company_id == current_user.company_id).order_by(models.ActivityLog.timestamp.desc()).limit(limit).all()
     
     response = []
     for log, user in results:
@@ -833,21 +935,26 @@ def get_activity_logs(limit: int = 20, db: Session = Depends(get_db)):
         })
     return response
 
-@app.get("/api/dashboard/stats/{user_id}")
-def get_dashboard_stats(user_id: int, db: Session = Depends(get_db)):
-    # Total Brands
-    total_brands = db.query(models.Brand).count()
+@app.get("/api/dashboard/stats")
+def get_dashboard_stats(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Total Brands (Company scoped)
+    total_brands = db.query(models.Brand).filter(models.Brand.company_id == current_user.company_id).count()
     
-    # Active Campaigns: Brands with status='ACTIVE'
-    # User requested to show total number of brand cards that are active.
-    active_campaigns = db.query(models.Brand).filter(models.Brand.status == 'ACTIVE').count()
+    # Active Campaigns: Brands with status='ACTIVE' (Company scoped)
+    active_campaigns = db.query(models.Brand).filter(models.Brand.status == 'ACTIVE', models.Brand.company_id == current_user.company_id).count()
     
-    # AI Generations
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    ai_generations = user.generations_count if user else 0
+    # AI Generations (User scoped? Or Company scoped?)
+    # Usually stats are for the team. Let's make it company wide or keep it user specific?
+    # User requirement: "all pages ... scoped only to their company"
+    # "Dashboard ... should display only the data associated with that company."
+    # AI generations count might be interesting as a company total.
+    # But User model has `generations_count`.
+    # Let's sum up generations for all users in the company.
+    company_users = db.query(models.User).filter(models.User.company_id == current_user.company_id).all()
+    ai_generations = sum([(u.generations_count or 0) for u in company_users])
     
-    # Team Members
-    team_members = db.query(models.User).count()
+    # Team Members (Company scoped)
+    team_members = len(company_users)
     
     return {
         "total_brands": total_brands,
