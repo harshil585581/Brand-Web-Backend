@@ -594,7 +594,7 @@ class BrandCreate(BaseModel):
     accent_color_name: str = Form(...)
     accent_color_usage: str = Form(...)
 
-@app.post("/api/brands")
+@app.post("/api/brands", response_model=BrandDisplay)
 async def create_brand(
     name: str = Form(...),
     description: str = Form(...),
