@@ -22,6 +22,31 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
+@app.get("/create-admin")
+def create_admin(db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.email == "admin@gmail.com").first()
+    if existing:
+        return {"message": "Admin already exists"}
+
+    hashed_password = pwd_context.hash("123456")
+
+    admin_user = models.User(
+        name="Admin User",
+        username="admin",
+        email="admin@gmail.com",
+        password=hashed_password,
+        role="admin",
+        permissions="all"
+    )
+
+    db.add(admin_user)
+    db.commit()
+    db.refresh(admin_user)
+
+    return {"message": "Admin created successfully"}
+
+
+
 from sqlalchemy import inspect
 
 @app.get("/check-tables")
