@@ -880,6 +880,23 @@ async def update_brand(
 
     return brand
 
+@app.delete("/api/brands/{brand_id}")
+def delete_brand(brand_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    brand = db.query(models.Brand).filter(models.Brand.id == brand_id, models.Brand.company_id == current_user.company_id).first()
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    
+    # Delete associated assets
+    db.query(models.BrandAsset).filter(models.BrandAsset.brand_id == brand.id).delete(synchronize_session=False)
+    
+    # Delete the brand itself
+    db.delete(brand)
+    db.commit()
+    
+    log_activity(db, current_user.id, "DELETED_BRAND", f"Deleted brand: {brand.name}")
+    
+    return {"message": "Brand deleted successfully"}
+
 class ContentGenerationRequest(BaseModel):
     brand_id: int
     prompt: str
