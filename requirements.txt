@@ -9,5 +9,4 @@ python-multipart
 requests
 psycopg2-binary
 alembic
-alembic
 python-jose[cryptography]

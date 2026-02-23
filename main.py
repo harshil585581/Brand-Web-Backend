@@ -1016,6 +1016,8 @@ def get_activity_logs(limit: int = 20, db: Session = Depends(get_db), current_us
         })
     return response
 
+from datetime import datetime, timedelta
+
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     # Total Brands (Company scoped)
@@ -1025,21 +1027,35 @@ def get_dashboard_stats(db: Session = Depends(get_db), current_user: models.User
     active_campaigns = db.query(models.Brand).filter(models.Brand.status == 'ACTIVE', models.Brand.company_id == current_user.company_id).count()
     
     # AI Generations (User scoped? Or Company scoped?)
-    # Usually stats are for the team. Let's make it company wide or keep it user specific?
-    # User requirement: "all pages ... scoped only to their company"
-    # "Dashboard ... should display only the data associated with that company."
-    # AI generations count might be interesting as a company total.
-    # But User model has `generations_count`.
-    # Let's sum up generations for all users in the company.
     company_users = db.query(models.User).filter(models.User.company_id == current_user.company_id).all()
     ai_generations = sum([(u.generations_count or 0) for u in company_users])
     
     # Team Members (Company scoped)
     team_members = len(company_users)
     
+    # AI Generations Velocity Chart Data (This week: Mon-Sun)
+    today = datetime.utcnow().date()
+    monday = today - timedelta(days=today.weekday())
+    
+    velocity_data = []
+    
+    for i in range(7):
+        current_day = monday + timedelta(days=i)
+        next_day = current_day + timedelta(days=1)
+        
+        count = db.query(models.ActivityLog).filter(
+            models.ActivityLog.company_id == current_user.company_id,
+            models.ActivityLog.action == 'GENERATED_CONTENT',
+            models.ActivityLog.timestamp >= current_day,
+            models.ActivityLog.timestamp < next_day
+        ).count()
+        
+        velocity_data.append(count)
+    
     return {
         "total_brands": total_brands,
         "active_campaigns": active_campaigns,
         "ai_generations": ai_generations,
-        "team_members": team_members
+        "team_members": team_members,
+        "velocity_chart": velocity_data
     }
