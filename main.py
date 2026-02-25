@@ -140,6 +140,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "https://brand-web11.netlify.app",
         "https://brand.thrishankdoorsandply.com",
+        "https://lightsalmon-leopard-586191.hostingersite.com",
     ], 
     allow_credentials=True,
     allow_methods=["*"],
