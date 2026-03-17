@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean
 from sqlalchemy.sql import func
-from .database import Base
+from database import Base
 
 class Company(Base):
     __tablename__ = "companies"
@@ -33,7 +33,10 @@ class Message(Base):
     description = Column(String, nullable=True) # Added to fix potential schema mismatch if needed, though not in original
     sender_id = Column(Integer, ForeignKey("users.id"))
     receiver_id = Column(Integer, ForeignKey("users.id"))
-    content = Column(String)
+    content = Column(String, nullable=True)
+    file_url = Column(String, nullable=True)
+    file_name = Column(String, nullable=True)
+    file_size = Column(String, nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     is_read = Column(Boolean, default=False)
     status = Column(String, default="sent") # sent, delivered, read

@@ -5,8 +5,8 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
-from .database import get_db, engine, Base
-from . import models
+from database import get_db, engine, Base
+import models
 from passlib.context import CryptContext
 from dotenv import load_dotenv
 import shutil
@@ -140,6 +140,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "https://brand-web11.netlify.app",
         "https://brand.thrishankdoorsandply.com",
+        "https://lightsalmon-leopard-586191.hostingersite.com",
     ], 
     allow_credentials=True,
     allow_methods=["*"],
@@ -382,17 +383,23 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, db: Session = D
     try:
         while True:
             data = await websocket.receive_json()
-            # Expecting data = {"receiver_id": int, "content": str}
+            # Expecting data = {"receiver_id": int, "content": str, "file_url": str, "file_name": str, "file_size": str}
             receiver_id = data.get("receiver_id")
             content = data.get("content")
+            file_url = data.get("file_url")
+            file_name = data.get("file_name")
+            file_size = data.get("file_size")
 
-            if receiver_id and content:
+            if receiver_id and (content or file_url):
                 # Save to DB
                 new_message = models.Message(
                     sender_id=user_id,
                     receiver_id=receiver_id,
                     content=content,
-                    status="sent"
+                    status="sent",
+                    file_url=file_url,
+                    file_name=file_name,
+                    file_size=file_size
                 )
                 db.add(new_message)
                 db.commit()
@@ -405,7 +412,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, db: Session = D
                     "content": content,
                     "timestamp": new_message.timestamp.isoformat(),
                     "is_read": False,
-                    "status": "sent"
+                    "status": "sent",
+                    "file_url": file_url,
+                    "file_name": file_name,
+                    "file_size": file_size
                 }
 
                 # Send to receiver
@@ -461,13 +471,31 @@ class MessageDisplay(BaseModel):
     id: int
     sender_id: int
     receiver_id: int
-    content: str
+    content: Optional[str] = None
     timestamp: datetime
     is_read: bool
     status: str
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    file_size: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+@app.post("/api/chat/upload")
+async def upload_chat_file(file: UploadFile = File(...)):
+    ext = file.filename.split(".")[-1]
+    fname = f"chat_{uuid.uuid4()}.{ext}"
+    fpath = f"backend/uploads/{fname}"
+    with open(fpath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    file_url = f"/uploads/{fname}"
+    file_size = f"{os.path.getsize(fpath) / 1024:.1f} KB"
+    return {
+        "file_url": file_url,
+        "file_name": file.filename,
+        "file_size": file_size
+    }
 
 @app.get("/api/messages/{other_user_id}", response_model=List[MessageDisplay])
 def get_messages(other_user_id: int, current_user_id: int = Query(...), db: Session = Depends(get_db)):
@@ -664,7 +692,7 @@ async def create_brand(
     accent_color_name: str = Form(...),
     accent_color_usage: str = Form(...),
     logomark: UploadFile = File(None),
-    wordmark: UploadFile = File(None),
+    wordmark: List[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -686,12 +714,18 @@ async def create_brand(
 
     wordmark_path = None
     if wordmark:
-        ext = wordmark.filename.split(".")[-1]
-        fname = f"wordmark_{uuid.uuid4()}.{ext}"
-        fpath = f"backend/uploads/{fname}"
-        with open(fpath, "wb") as buffer:
-            shutil.copyfileobj(wordmark.file, buffer)
-        wordmark_path = f"/uploads/{fname}"
+        wordmark_data = []
+        for wm_file in wordmark:
+            if wm_file and wm_file.filename:
+                ext = wm_file.filename.split(".")[-1]
+                fname = f"wordmark_{uuid.uuid4()}.{ext}"
+                fpath = f"backend/uploads/{fname}"
+                with open(fpath, "wb") as buffer:
+                    shutil.copyfileobj(wm_file.file, buffer)
+                # Store as "URL|ORIGINAL_FILENAME"
+                wordmark_data.append(f"/uploads/{fname}|{wm_file.filename}")
+        if wordmark_data:
+            wordmark_path = ",".join(wordmark_data)
 
     new_brand = models.Brand(
         slug=slug,
@@ -821,7 +855,7 @@ async def update_brand(
     accent_color_name: str = Form(...),
     accent_color_usage: str = Form(...),
     logomark: UploadFile = File(None),
-    wordmark: UploadFile = File(None),
+    wordmark: List[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
     brand = db.query(models.Brand).filter(models.Brand.id == brand_id).first()
@@ -838,12 +872,19 @@ async def update_brand(
         brand.logomark_url = f"/uploads/{fname}"
 
     if wordmark:
-        ext = wordmark.filename.split(".")[-1]
-        fname = f"wordmark_{uuid.uuid4()}.{ext}"
-        fpath = f"backend/uploads/{fname}"
-        with open(fpath, "wb") as buffer:
-            shutil.copyfileobj(wordmark.file, buffer)
-        brand.wordmark_url = f"/uploads/{fname}"
+        existing_wordmarks = brand.wordmark_url.split(',') if brand.wordmark_url else []
+        wordmark_data = []
+        for wm_file in wordmark:
+            if wm_file and wm_file.filename:
+                ext = wm_file.filename.split(".")[-1]
+                fname = f"wordmark_{uuid.uuid4()}.{ext}"
+                fpath = f"backend/uploads/{fname}"
+                with open(fpath, "wb") as buffer:
+                    shutil.copyfileobj(wm_file.file, buffer)
+                wordmark_data.append(f"/uploads/{fname}|{wm_file.filename}")
+        if wordmark_data:
+            existing_wordmarks.extend(wordmark_data)
+            brand.wordmark_url = ",".join(existing_wordmarks)
 
     # Update fields
     brand.name = name
@@ -879,6 +920,27 @@ async def update_brand(
     log_activity(db, user_id, "UPDATED_BRAND", f"Updated brand: {brand.name}")
 
     return brand
+
+@app.delete("/api/brands/{brand_id}/wordmark")
+def delete_wordmark(brand_id: int, url: str = Query(...), db: Session = Depends(get_db)):
+    brand = db.query(models.Brand).filter(models.Brand.id == brand_id).first()
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    if not brand.wordmark_url:
+        return {"message": "No wordmarks to delete"}
+
+    wordmarks = brand.wordmark_url.split(',')
+    # Filter out the one that starts with the given URL (since it might have |filename appended)
+    updated_wordmarks = [w for w in wordmarks if not w.startswith(url)]
+
+    # If the list changed, update the DB
+    if len(wordmarks) != len(updated_wordmarks):
+        brand.wordmark_url = ",".join(updated_wordmarks) if updated_wordmarks else None
+        db.commit()
+        return {"message": "Wordmark deleted successfully"}
+    
+    return {"message": "Wordmark not found"}
 
 @app.delete("/api/brands/{brand_id}")
 def delete_brand(brand_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -917,8 +979,9 @@ async def generate_content(request: ContentGenerationRequest, db: Session = Depe
 
     # Construct the system prompt based on brand identity
     system_prompt = f"""
-You are an advanced Brand Content Intelligence Engine for '{brand.name}'.
-Your goal is to generate high-quality, brand-aligned content.
+You are an Advanced Brand Content Intelligence Engine for {brand.name} — an expert AI system specializing in brand strategy, audience psychology, storytelling, and high-performance marketing content.
+
+Your mission is to generate high-quality, brand-aligned, audience-relevant, and goal-driven content that strengthens brand identity, engagement, and conversion outcomes.
 
 BRAND IDENTITY:
 - Name: {brand.name}
@@ -946,7 +1009,7 @@ INSTRUCTIONS:
     temperature = request.creativity / 100.0
 
     payload = {
-        "model": "mistralai/mistral-7b-instruct", # Removed :free suffix to use available endpoint
+        "model": "mistralai/mistral-7b-instruct:free",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": request.prompt}

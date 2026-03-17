@@ -26,7 +26,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 # Import Base from your models
-from backend.models import Base
+from models import Base
 target_metadata = Base.metadata
 
 # Override sqlalchemy.url with environment variable
