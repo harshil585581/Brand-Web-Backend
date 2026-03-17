@@ -67,7 +67,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
-alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "alembic.ini"))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+alembic_cfg = Config(os.path.join(BASE_DIR, "alembic.ini"))
+alembic_cfg.set_main_option("script_location", os.path.join(BASE_DIR, "alembic"))
 try:
     command.upgrade(alembic_cfg, "head")
 except Exception as e:
@@ -415,7 +417,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, db: Session = D
                     "status": "sent",
                     "file_url": file_url,
                     "file_name": file_name,
-                    "file_size": file_size
+                    "file_size": file_size,
+                    "is_deleted_for_everyone": False
                 }
 
                 # Send to receiver
@@ -478,7 +481,7 @@ class MessageDisplay(BaseModel):
     file_url: Optional[str] = None
     file_name: Optional[str] = None
     file_size: Optional[str] = None
-    is_deleted_for_everyone: bool = False
+    is_deleted_for_everyone: Optional[bool] = False
 
     class Config:
         from_attributes = True
@@ -502,8 +505,8 @@ async def upload_chat_file(file: UploadFile = File(...)):
 def get_messages(other_user_id: int, current_user_id: int = Query(...), db: Session = Depends(get_db)):
     # Fetch messages between current_user and other_user
     messages = db.query(models.Message).filter(
-        ((models.Message.sender_id == current_user_id) & (models.Message.receiver_id == other_user_id) & (models.Message.deleted_by_sender == False)) |
-        ((models.Message.sender_id == other_user_id) & (models.Message.receiver_id == current_user_id) & (models.Message.deleted_by_receiver == False))
+        ((models.Message.sender_id == current_user_id) & (models.Message.receiver_id == other_user_id) & (models.Message.deleted_by_sender.isnot(True))) |
+        ((models.Message.sender_id == other_user_id) & (models.Message.receiver_id == current_user_id) & (models.Message.deleted_by_receiver.isnot(True)))
     ).order_by(models.Message.timestamp.asc()).all()
     
     return messages
@@ -511,7 +514,7 @@ def get_messages(other_user_id: int, current_user_id: int = Query(...), db: Sess
 @app.delete("/api/messages/{message_id}")
 async def delete_message(
     message_id: int, 
-    type: str = Query(..., regex="^(forme|everyone)$"), 
+    type: str = Query(..., pattern="^(forme|everyone)$"), 
     current_user: models.User = Depends(get_current_user), 
     db: Session = Depends(get_db)
 ):
