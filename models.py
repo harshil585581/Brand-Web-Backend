@@ -40,6 +40,9 @@ class Message(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     is_read = Column(Boolean, default=False)
     status = Column(String, default="sent") # sent, delivered, read
+    is_deleted_for_everyone = Column(Boolean, default=False)
+    deleted_by_sender = Column(Boolean, default=False)
+    deleted_by_receiver = Column(Boolean, default=False)
 
 class ActivityLog(Base):
     __tablename__ = "activity_logs"

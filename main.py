@@ -478,6 +478,7 @@ class MessageDisplay(BaseModel):
     file_url: Optional[str] = None
     file_name: Optional[str] = None
     file_size: Optional[str] = None
+    is_deleted_for_everyone: bool = False
 
     class Config:
         from_attributes = True
@@ -501,11 +502,53 @@ async def upload_chat_file(file: UploadFile = File(...)):
 def get_messages(other_user_id: int, current_user_id: int = Query(...), db: Session = Depends(get_db)):
     # Fetch messages between current_user and other_user
     messages = db.query(models.Message).filter(
-        ((models.Message.sender_id == current_user_id) & (models.Message.receiver_id == other_user_id)) |
-        ((models.Message.sender_id == other_user_id) & (models.Message.receiver_id == current_user_id))
+        ((models.Message.sender_id == current_user_id) & (models.Message.receiver_id == other_user_id) & (models.Message.deleted_by_sender == False)) |
+        ((models.Message.sender_id == other_user_id) & (models.Message.receiver_id == current_user_id) & (models.Message.deleted_by_receiver == False))
     ).order_by(models.Message.timestamp.asc()).all()
     
     return messages
+
+@app.delete("/api/messages/{message_id}")
+async def delete_message(
+    message_id: int, 
+    type: str = Query(..., regex="^(forme|everyone)$"), 
+    current_user: models.User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    msg = db.query(models.Message).filter(models.Message.id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    if msg.sender_id != current_user.id and msg.receiver_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this message")
+
+    if type == "forme":
+        if msg.sender_id == current_user.id:
+            msg.deleted_by_sender = True
+        elif msg.receiver_id == current_user.id:
+            msg.deleted_by_receiver = True
+        db.commit()
+        return {"message": "Message deleted for you"}
+
+    elif type == "everyone":
+        if msg.sender_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Only the sender can delete a message for everyone")
+        
+        msg.is_deleted_for_everyone = True
+        db.commit()
+
+        # Broadcast WebSocket event
+        update_payload = {
+            "type": "message_deleted",
+            "message_id": message_id,
+            "delete_type": "everyone",
+            "receiver_id": msg.receiver_id,
+            "sender_id": msg.sender_id
+        }
+        await manager.send_personal_message(update_payload, msg.receiver_id)
+        await manager.send_personal_message(update_payload, msg.sender_id)
+
+        return {"message": "Message deleted for everyone"}
 
 # Event APIs
 
